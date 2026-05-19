@@ -1,0 +1,60 @@
+name: Leo eval
+
+on:
+  pull_request:
+    branches: [main]
+
+# One eval run per PR branch. Cancel the previous run if a new push arrives.
+concurrency:
+  group: leo-eval-${{ github.head_ref }}
+  cancel-in-progress: true
+
+jobs:
+  eval:
+    name: Agent eval (leo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    permissions:
+      pull-requests: write
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Determine suite from changed paths
+        id: suite
+        run: |
+          # Default to agent-v2. Services that have their own suite config
+          # can extend this step to select a different suite based on the
+          # files changed in the PR.
+          echo "path=evals/suites/agent-v2.yaml" >> "$GITHUB_OUTPUT"
+
+      - name: Run Leo eval suite
+        id: leo
+        uses: leo-platform/leo-action@v1
+        with:
+          suite: ${{ steps.suite.outputs.path }}
+          commit_sha: ${{ github.event.pull_request.head.sha }}
+          pr_number: ${{ github.event.pull_request.number }}
+          leo_url: ${{ secrets.LEO_URL }}
+          leo_token: ${{ secrets.LEO_TOKEN }}
+          # block-on-regression is read from suite config, not set here.
+          # This keeps gate policy in code, not in CI config.
+
+      - name: Post eval summary to PR
+        if: always()
+        uses: leo-platform/leo-action/comment@v1
+        with:
+          pr_number: ${{ github.event.pull_request.number }}
+          run_id: ${{ steps.leo.outputs.run_id }}
+          leo_url: ${{ secrets.LEO_URL }}
+          leo_token: ${{ secrets.LEO_TOKEN }}
+
+      - name: Upload eval artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: leo-eval-${{ github.run_id }}
+          path: .leo/results/
+          retention-days: 30

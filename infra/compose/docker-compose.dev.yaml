@@ -1,0 +1,197 @@
+version: "3.9"
+
+# Local development stack.
+# This is NOT a production compose file — it trades durability and
+# security for fast iteration. Volumes are local, ports are exposed,
+# auth is disabled on observability services.
+
+services:
+  orchestrator:
+    build:
+      context: ../../services/orchestrator
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"   # HTTP API
+      - "9090:9090"   # gRPC
+    environment:
+      LEO_ENV: development
+      LEO_LOG_LEVEL: debug
+      LEO_DB_DSN: postgres://leo:leo@postgres:5432/leo?sslmode=disable
+      LEO_S3_ENDPOINT: http://minio:9000
+      LEO_S3_BUCKET: leo-traces
+      LEO_S3_ACCESS_KEY: minioadmin
+      LEO_S3_SECRET_KEY: minioadmin
+      LEO_SCORER_ADDR: scorer:50051
+      LEO_DATASET_ADDR: datasets:50052
+      LEO_ADVERSARIAL_ADDR: adversarial:50053
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+
+  scorer:
+    build:
+      context: ../../services/scorer
+      dockerfile: Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      LEO_ENV: development
+      LEO_LOG_LEVEL: debug
+      LEO_JUDGE_MODEL: gpt-4o
+      LEO_JUDGE_API_KEY: ${OPENAI_API_KEY}
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otelcol:4317
+    restart: unless-stopped
+
+  replay:
+    build:
+      context: ../../services/replay
+      dockerfile: Dockerfile
+    ports:
+      - "8082:8082"
+    environment:
+      LEO_ENV: development
+      LEO_DB_DSN: postgres://leo:leo@postgres:5432/leo?sslmode=disable
+      LEO_S3_ENDPOINT: http://minio:9000
+      LEO_S3_BUCKET: leo-traces
+      LEO_S3_ACCESS_KEY: minioadmin
+      LEO_S3_SECRET_KEY: minioadmin
+    depends_on:
+      - postgres
+      - minio
+    restart: unless-stopped
+
+  adversarial:
+    build:
+      context: ../../services/adversarial
+      dockerfile: Dockerfile
+    ports:
+      - "8083:8083"
+    environment:
+      LEO_ENV: development
+      LEO_GENERATOR_MODEL: gpt-4o
+      LEO_GENERATOR_API_KEY: ${OPENAI_API_KEY}
+    restart: unless-stopped
+
+  datasets:
+    build:
+      context: ../../services/datasets
+      dockerfile: Dockerfile
+    ports:
+      - "8084:8084"
+    environment:
+      LEO_ENV: development
+      LEO_DB_DSN: postgres://leo:leo@postgres:5432/leo?sslmode=disable
+      LEO_S3_ENDPOINT: http://minio:9000
+      LEO_S3_BUCKET: leo-datasets
+      LEO_S3_ACCESS_KEY: minioadmin
+      LEO_S3_SECRET_KEY: minioadmin
+    depends_on:
+      - postgres
+      - minio
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: ../../services/dashboard
+      dockerfile: Dockerfile
+      target: dev
+    ports:
+      - "3000:3000"
+    environment:
+      NEXT_PUBLIC_LEO_API: http://localhost:8080
+    volumes:
+      - ../../services/dashboard:/app
+      - /app/node_modules
+    restart: unless-stopped
+
+  # Infrastructure
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: leo
+      POSTGRES_USER: leo
+      POSTGRES_PASSWORD: leo
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U leo"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"   # MinIO console (local only)
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Observability
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:latest
+    volumes:
+      - ./otelcol.yaml:/etc/otelcol-contrib/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - tempo
+      - loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor
+    volumes:
+      - ../../infra/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+
+  tempo:
+    image: grafana/tempo:latest
+    ports:
+      - "3200:3200"
+    volumes:
+      - tempo_data:/var/tempo
+
+  loki:
+    image: grafana/loki:latest
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki_data:/loki
+
+volumes:
+  postgres_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  tempo_data:
+  loki_data:

@@ -1,0 +1,15 @@
+bin/
+*.test
+__pycache__/
+*.pyc
+.venv/
+dist/
+*.egg-info/
+node_modules/
+.next/
+config/leo.local.yaml
+.env
+.env.*
+.vscode/
+.idea/
+.leo/
