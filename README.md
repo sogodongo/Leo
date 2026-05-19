@@ -1,3 +1,5 @@
+<div align="center">
+
 ![go](https://img.shields.io/badge/go-1.22-00ADD8?style=flat-square&logo=go&logoColor=white)
 ![python](https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&logo=python&logoColor=white)
 ![typescript](https://img.shields.io/badge/typescript-5.0-3178C6?style=flat-square&logo=typescript&logoColor=white)
@@ -5,11 +7,26 @@
 ![license](https://img.shields.io/badge/license-Apache_2.0-green?style=flat-square)
 ![owasp](https://img.shields.io/badge/OWASP-ASI01--10-red?style=flat-square)
 
+<br />
+
 # Leo
 
-CI-native evaluation and regression control for AI agents.
+### CI-native evaluation and regression control for AI agents
 
-> Leo blocks deployments when agent quality regresses. Before broken agents reach production.
+**Leo blocks broken agents before they reach production.**<br />
+Scored evals on every PR. Deployment gates. Trace replay. OWASP adversarial testing. Full observability.
+
+<br />
+
+[Quickstart](#quickstart) · [Architecture](#architecture) · [Eval dimensions](#eval-dimensions) · [Regression gate](#regression-gate) · [Trace replay](#trace-replay) · [Docs](docs/)
+
+<br />
+
+<!-- Add a terminal GIF or dashboard screenshot here -->
+<!-- Recommended: asciinema recording of `leo eval run` blocking a PR -->
+<!-- ![Leo CI demo](docs/assets/leo-demo.gif) -->
+
+</div>
 
 ---
 
@@ -17,11 +34,27 @@ CI-native evaluation and regression control for AI agents.
 
 Leo is not a benchmarking app, a prompt playground, or an agent framework.
 
-It is an evaluation infrastructure layer that sits between your agent codebase and production. Every pull request that touches agent behaviour runs a scored eval suite before it can merge. If any dimension regresses beyond its configured threshold, the PR is blocked automatically — with a trace replay link pointing to exactly which case failed and why.
+It is an evaluation infrastructure layer that sits between your agent codebase and production. Every pull request that touches agent behaviour runs a scored eval suite before it can merge. If any dimension regresses beyond its configured threshold, the PR is blocked automatically, with a trace replay link pointing to exactly which case failed and why.
 
-The core claim: **no agent reaches production without passing its eval suite.**
+**The core claim: no agent reaches production without passing its eval suite.**
 
-This is an engineering problem, not a research problem. Leo treats agent quality the same way a mature engineering organisation treats software reliability — with CI gates, regression history, observability, and on-call runbooks.
+This is an engineering problem, not a research problem. Leo treats agent quality the same way a mature engineering organisation treats software reliability: CI gates, regression history, observability, and on-call runbooks.
+
+### Who uses this
+
+| Role | What Leo gives them |
+|---|---|
+| AI engineers | Confidence that prompt or model changes don't silently regress quality |
+| Platform teams | A CI gate they can enforce across every agent service |
+| Security engineers | OWASP ASI01-ASI10 coverage on every deploy |
+| On-call engineers | Trace replay and span diffing during incident review |
+
+### What it prevents
+
+- Hallucination rate silently worsening across model updates
+- Policy compliance regressing after prompt changes
+- Tool-call correctness breaking after agent refactors
+- Adversarial vulnerabilities shipping undetected
 
 ---
 
@@ -42,6 +75,9 @@ $ leo eval run --suite evals/suites/agent-v2.yaml --pr 847 --block-on-regression
   Trace:   trc_01HZXQP84JBV6K3NDFQ7W2MRC8
   Replay:  leo trace replay trc_01HZXQP84JBV6K3NDFQ7W2MRC8
 ```
+
+<!-- Screenshot placeholder: GitHub PR with Leo check failing -->
+<!-- ![Leo PR gate](docs/assets/leo-pr-gate.png) -->
 
 ---
 
@@ -112,9 +148,7 @@ flowchart TD
     ORCH --> OBS
 ```
 
----
-
-## Service responsibilities
+### Service responsibilities
 
 | Service | Language | Owns |
 |---|---|---|
@@ -125,11 +159,13 @@ flowchart TD
 | `datasets` | Go | Versioned test cases, sampling strategies, lineage |
 | `dashboard` | TypeScript | Score trends, trace viewer, gate status |
 
-Each service has one clear owner. No shared utility packages. No cross-service imports. The gRPC interface between orchestrator and scorer is a versioned contract boundary.
+Each service has one clear owner. No shared utility packages. No cross-service imports. The gRPC interface between orchestrator and scorer is a versioned contract boundary — changes require a protocol version bump.
 
 ---
 
 ## Eval dimensions
+
+Ten independently configurable dimensions. Each has its own scorer, threshold, drift limit, and block policy.
 
 | Dimension | Scorer type | What it measures |
 |---|---|---|
@@ -159,8 +195,6 @@ for each dimension in suite config:
     if score < threshold and block_on_breach: BLOCK
 ```
 
-Suite config:
-
 ```yaml
 suite: agent-v2
 baseline_ref: main~1
@@ -186,27 +220,38 @@ adversarial:
                    ASI06, ASI07, ASI08, ASI09, ASI10]
 ```
 
+### Gate behavior on infrastructure failure
+
 | Condition | Default behavior |
 |---|---|
-| Scorer service unreachable | Block merge (fail-closed) |
+| Scorer service unreachable | Block merge (fail-closed by default) |
 | Eval run timeout | Block merge |
 | Partial scorer failure | Block merge |
 | LLM judge rate limit | Exponential backoff, 3 retries |
+
+Fail-open behavior is configurable per suite via `fail_closed_on_infra_error: false`. The default is fail-closed. An eval system that opens the gate on uncertainty defeats its own purpose.
 
 ---
 
 ## Trace replay
 
+Replay determinism matters more than raw throughput. A fast eval system that cannot reproduce failures is useless during incident review.
+
 ```bash
+# Reproduce a failure without re-running the agent live
 leo trace replay trc_01HZXQP84JBV6K3NDFQ7W2MRC8
-leo trace diff   trc_01HZXQ... trc_01HZWP...
+
+# Diff a regression against its baseline
+leo trace diff trc_01HZXQ... trc_01HZWP...
+
+# Re-score a stored trace with updated scorers
 leo trace rescore trc_01HZXQ... --scorers hallucination_rate,grounding_score
-leo trace export  trc_01HZXQ... --format otlp --out ./traces/
+
+# Export to OTLP for external analysis
+leo trace export trc_01HZXQ... --format otlp --out ./traces/
 ```
 
-Replay is deterministic: LLM judges run at `temperature=0` with the trace ID seeded into the prompt, and tool results are mocked from the stored trace. Live API changes never affect replay scores. See [ADR-002](docs/architecture/ADR-002-scorer-determinism.md).
-
-Diff output:
+Replay is deterministic because LLM judges run at `temperature=0` with the trace ID seeded into the prompt, and tool results are mocked from the stored trace. Live API changes never affect replay scores. See [ADR-002](docs/architecture/ADR-002-scorer-determinism.md).
 
 ```
 span[1]  llm_call           MATCH    1210ms -> 1180ms
@@ -217,9 +262,14 @@ span[3]  llm_call           CHANGED  fabricated citation detected
 verdict: hallucination at span[3] caused by reduced search results at span[2]
 ```
 
+<!-- Screenshot placeholder: trace diff view in Leo dashboard -->
+<!-- ![Trace diff](docs/assets/leo-trace-diff.png) -->
+
 ---
 
 ## Adversarial testing
+
+15% of each eval run is adversarial by default. Attack cases are generated deterministically per suite name and seed, so regression history is reproducible.
 
 | Class | Attack type |
 |---|---|
@@ -234,7 +284,58 @@ verdict: hallucination at span[3] caused by reduced search results at span[2]
 | ASI09 | Overreliance — false confidence exploitation |
 | ASI10 | Model theft — system prompt extraction |
 
-Attack cases are deterministic per suite name and seed. The same suite always generates the same attack cases, which is required for reproducible regression history.
+---
+
+## Quickstart
+
+**Prerequisites:** Docker 24+, Go 1.22+, Python 3.11+
+
+```bash
+git clone https://github.com/sogodongo/Leo.git && cd Leo
+
+# Start all services: orchestrator, scorer, replay, adversarial, Postgres, MinIO, observability stack
+docker compose -f infra/compose/docker-compose.dev.yaml up -d
+
+# Run the example agent through an eval suite
+leo eval run --suite evals/suites/agent-v2.yaml --agent examples/simple-agent/agent.py
+```
+
+| Service | Local URL |
+|---|---|
+| Dashboard | http://localhost:3000 |
+| Orchestrator API | http://localhost:8080 |
+| Grafana | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+| MinIO console | http://localhost:9001 |
+
+---
+
+## Instrument your agent
+
+Two imports. One initialisation call. Everything else is captured automatically.
+
+```python
+from leo_sdk import LeoTracer, tool_span
+from opentelemetry import trace
+
+LeoTracer().init(
+    service_name="agent-v2",
+    leo_endpoint="http://leo.internal:4317",
+)
+
+async def my_agent(query: str) -> str:
+    tracer = trace.get_tracer(__name__)
+    with tracer.start_as_current_span("agent.run") as span:
+        span.set_attribute("leo.query", query)
+        with tool_span("web_search", args={"q": query}) as ts:
+            result = await web_search(query)
+            ts.set_output(result)
+        response = await llm_call(query, context=result)
+        span.set_attribute("leo.response", response)
+        return response
+```
+
+The SDK follows [OpenInference](https://github.com/Arize-ai/openinference) semantic conventions. Traces are compatible with Langfuse, Arize, and any OTLP-compatible backend.
 
 ---
 
@@ -269,50 +370,7 @@ jobs:
         uses: leo-platform/leo-action/comment@v1
 ```
 
----
-
-## Instrument your agent
-
-```python
-from leo_sdk import LeoTracer, tool_span
-from opentelemetry import trace
-
-LeoTracer().init(
-    service_name="agent-v2",
-    leo_endpoint="http://leo.internal:4317",
-)
-
-async def my_agent(query: str) -> str:
-    tracer = trace.get_tracer(__name__)
-    with tracer.start_as_current_span("agent.run") as span:
-        span.set_attribute("leo.query", query)
-        with tool_span("web_search", args={"q": query}) as ts:
-            result = await web_search(query)
-            ts.set_output(result)
-        response = await llm_call(query, context=result)
-        span.set_attribute("leo.response", response)
-        return response
-```
-
-The SDK follows OpenInference semantic conventions. Compatible with Langfuse, Arize, and any OTLP backend.
-
----
-
-## Quickstart
-
-```bash
-git clone https://github.com/sogodongo/Leo.git && cd Leo
-docker compose -f infra/compose/docker-compose.dev.yaml up -d
-leo eval run --suite evals/suites/agent-v2.yaml --agent examples/simple-agent/agent.py
-```
-
-| Service | URL |
-|---|---|
-| Dashboard | http://localhost:3000 |
-| Orchestrator API | http://localhost:8080 |
-| Grafana | http://localhost:3001 |
-| Prometheus | http://localhost:9090 |
-| MinIO console | http://localhost:9001 |
+Gate policy lives in the suite config, not the CI workflow. This keeps threshold changes reviewable as code, not as pipeline edits.
 
 ---
 
@@ -331,26 +389,31 @@ helm install leo leo/leo \
 kubectl -n leo-system rollout status deployment/leo-orchestrator
 ```
 
-The scorer HPA scales on both CPU utilisation and `leo_orchestrator_worker_queue_depth` — it pre-scales before CPU spikes to reduce eval run latency.
+The scorer HPA scales on both CPU utilisation and `leo_orchestrator_worker_queue_depth`. It pre-scales before CPU spikes, which matters because LLM judge calls are slow to start but fast to queue.
 
 ---
 
 ## Observability
 
+Leo instruments itself with the same OpenTelemetry pipeline it uses to evaluate agents.
+
 | Signal | Backend | What it covers |
 |---|---|---|
 | Traces | Tempo | Eval run spans, scorer call latency, replay timing |
 | Metrics | Prometheus + Grafana | Cases/sec, queue depth, gate decisions, scorer error rate |
-| Logs | Loki | Structured JSON, every line carries run_id and trace_id |
+| Logs | Loki | Structured JSON — every line carries `run_id` and `trace_id` |
 
-Key metrics:
+Key metrics to watch:
 
-| Metric | What it tells you |
+| Metric | Signal |
 |---|---|
-| `leo_orchestrator_eval_run_duration_seconds` | End-to-end eval run time by suite |
-| `leo_orchestrator_worker_queue_depth` | Backpressure — scale scorer replicas if this climbs |
-| `leo_orchestrator_gate_decisions_total` | Regression rate over time, labelled by state |
-| `leo_scorer_call_duration_seconds` | LLM judge latency by dimension |
+| `leo_orchestrator_worker_queue_depth` | Backpressure. Scale scorer replicas if this climbs. |
+| `leo_orchestrator_gate_decisions_total{state="closed"}` | Regression rate over time. |
+| `leo_scorer_call_duration_seconds` | LLM judge latency by dimension. |
+| `leo_orchestrator_eval_cases_total{outcome="error"}` | Scorer infrastructure health. |
+
+<!-- Screenshot placeholder: Grafana dashboard showing score trends -->
+<!-- ![Grafana](docs/assets/leo-grafana.png) -->
 
 ---
 
@@ -369,11 +432,11 @@ Key metrics:
 
 ## Design decisions
 
-**Go for orchestration, Python for scoring.** The worker pool needs Go's goroutine model for parallel case management. Scoring needs Python for DeepEval and the ML ecosystem. Mixing them into one process means losing one or the other. gRPC between them costs ~1ms per hop — negligible against LLM judge latency of 2-10s. Full reasoning in [ADR-001](docs/architecture/ADR-001-service-decomposition.md).
+**Go for orchestration, Python for scoring.** The worker pool needs Go's goroutine model for parallel case management. Scoring needs Python for DeepEval and the ML ecosystem. Mixing them into one process means losing one or the other. gRPC between them costs ~1ms per hop, negligible against LLM judge latency of 2-10s. Full reasoning in [ADR-001](docs/architecture/ADR-001-service-decomposition.md).
 
-**Append-only Postgres schema.** Eval runs and scores are never updated after insert. Regression history is tamper-evident. Scores are stored as `NUMERIC(6,4)` not `FLOAT` because float arithmetic introduces rounding errors that compound in drift calculations.
+**Append-only Postgres schema.** Eval runs and scores are never updated after insert. Regression history is tamper-evident. Scores are `NUMERIC(6,4)` not `FLOAT` because float arithmetic introduces rounding errors that compound across drift calculations.
 
-**Gate logic is pure.** `gate.Evaluate()` takes a run result and a suite config and returns a decision. No I/O, no side effects. The most critical function in the platform has no hidden dependencies and is trivially testable.
+**Gate logic is pure.** `gate.Evaluate()` takes a run result and a suite config and returns a decision. No I/O, no side effects. The most critical function in the platform has no hidden dependencies.
 
 **Scorer determinism via trace ID seeding.** LLM judges run at `temperature=0` with the trace ID embedded in the prompt. Same trace ID means same judge input means same completion. Tool results are mocked from the stored trace on replay. See [ADR-002](docs/architecture/ADR-002-scorer-determinism.md).
 
@@ -405,6 +468,41 @@ leo/
 
 ---
 
+## Non-goals
+
+Leo is deliberately scoped. It does not:
+
+- Train or fine-tune models
+- Manage agent prompts or versions
+- Replace your observability stack
+- Act as an agent framework or orchestration layer
+- Provide a hosted eval service
+
+It does one thing: gate deployments on scored agent quality.
+
+---
+
+## Roadmap
+
+- [ ] Async eval mode for large suites (Kafka-backed job queue)
+- [ ] Dataset versioning UI in dashboard
+- [ ] Go SDK for instrumentation parity
+- [ ] Score trend anomaly detection (statistical drift alerts)
+- [ ] Multi-model eval (same suite, different model backends)
+- [ ] Eval result export to Weights & Biases / MLflow
+- [ ] SARIF output for GitHub Code Scanning integration
+
+---
+
+## Architecture decision records
+
+| ADR | Decision | Status |
+|---|---|---|
+| [ADR-001](docs/architecture/ADR-001-service-decomposition.md) | Service decomposition: Go + Python split | Accepted |
+| [ADR-002](docs/architecture/ADR-002-scorer-determinism.md) | Scorer determinism via trace ID seeding | Accepted |
+
+---
+
 ## Security
 
 - All inter-service calls use mTLS in production
@@ -412,6 +510,17 @@ leo/
 - Traces encrypted at rest in S3 with AES-256
 - Adversarial engine runs in an isolated Pod with no outbound network access
 - Gate overrides are logged with approver identity and reason
+
+---
+
+## Contributing
+
+See [docs/architecture/](docs/architecture/) for ADRs covering major design decisions.
+
+Pull requests should include:
+- Eval coverage for new scorer dimensions
+- Updated suite config documentation if thresholds change
+- A trace replay test demonstrating the change behaves deterministically
 
 ---
 
