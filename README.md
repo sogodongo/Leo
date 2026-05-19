@@ -47,39 +47,69 @@ $ leo eval run --suite evals/suites/agent-v2.yaml --pr 847 --block-on-regression
 
 ## Architecture
 
-```
-CI / Developer surface
-PR opened -> GitHub Action -> leo CLI -> eval config parsed
-                 |                            |
-         merge gate enforced       suite + thresholds loaded
-                 |
-                 | gRPC
-                 v
-Orchestrator  (Go)
-Receives run request -> loads dataset version
-Injects adversarial cases (15% of run by default)
-Distributes cases across semaphore-bounded worker pool
-Aggregates scores -> computes gate decision -> stores to Postgres
-Posts GitHub Check status -> notifies Slack on regression
-        |                              |
-        | gRPC                         | gRPC
-        v                              v
-Scorer  (Python)              Adversarial Engine  (Python)
-10 eval dimensions            OWASP ASI01-ASI10 generation
-LLM-as-judge (temp=0)         Deterministic seeding per suite
-Deterministic scorers         Versioned attack catalog
-DeepEval integration
+```mermaid
+flowchart TD
+    PR[Pull Request / leo CLI] -->|eval config| GHA[GitHub Action]
+    GHA -->|gRPC: RunRequest| ORCH
 
-Replay Engine  (Go + Python)
-Loads stored OTel trace -> mocks tool results from trace
-Re-executes agent -> diffs spans -> pinpoints regression
-Same trace ID always produces same replay output
+    subgraph ORCH["Orchestrator (Go)"]
+        direction TB
+        RQ[Receive run request]
+        DS[Load dataset version]
+        WP[Semaphore worker pool]
+        AG[Aggregate scores]
+        GD[Compute gate decision]
+        RQ --> DS --> WP --> AG --> GD
+    end
 
-Postgres              S3 / Object storage     Observability
-Eval run history      Raw OTel traces          Traces  -> Tempo
-Dimension scores      Eval artifacts           Metrics -> Grafana
-Gate decisions        Dataset versions         Logs    -> Loki
-Baselines             Judge transcripts
+    GD -->|pass| OPEN[Merge unblocked]
+    GD -->|fail| BLOCK[PR blocked + Slack alert]
+
+    WP -->|gRPC: ScoreRequest| SCORER
+    WP -->|gRPC: AttackCases| ADV
+
+    subgraph SCORER["Scorer (Python)"]
+        direction TB
+        S1[tool_use_correctness]
+        S2[hallucination_rate]
+        S3[grounding_score]
+        S4[policy_compliance]
+        S5[adversarial_resistance]
+        S6[reliability_score ...]
+    end
+
+    subgraph ADV["Adversarial Engine (Python)"]
+        direction TB
+        A1[OWASP ASI01-ASI10 generator]
+        A2[Deterministic seeding]
+        A3[Versioned attack catalog]
+    end
+
+    subgraph REPLAY["Replay Engine (Go + Python)"]
+        direction TB
+        R1[Load stored OTel trace]
+        R2[Mock tool results from trace]
+        R3[Re-execute agent]
+        R4[Diff spans -> pinpoint regression]
+        R1 --> R2 --> R3 --> R4
+    end
+
+    WP --> REPLAY
+
+    subgraph STORAGE["Storage"]
+        PG[(Postgres\nEval runs\nScores\nGate decisions)]
+        S3[(S3\nOTel traces\nArtifacts\nDatasets)]
+    end
+
+    subgraph OBS["Observability"]
+        T[Traces -> Tempo]
+        M[Metrics -> Grafana]
+        L[Logs -> Loki]
+    end
+
+    GD --> PG
+    WP --> S3
+    ORCH --> OBS
 ```
 
 ---
@@ -95,7 +125,7 @@ Baselines             Judge transcripts
 | `datasets` | Go | Versioned test cases, sampling strategies, lineage |
 | `dashboard` | TypeScript | Score trends, trace viewer, gate status |
 
-Each service has one clear owner. No shared utility packages. No cross-service imports. The gRPC interface between orchestrator and scorer is a versioned contract boundary — changes require a protocol version bump.
+Each service has one clear owner. No shared utility packages. No cross-service imports. The gRPC interface between orchestrator and scorer is a versioned contract boundary.
 
 ---
 
@@ -168,17 +198,10 @@ adversarial:
 ## Trace replay
 
 ```bash
-# Reproduce a failure without re-running the agent
 leo trace replay trc_01HZXQP84JBV6K3NDFQ7W2MRC8
-
-# Diff a regression against its baseline
-leo trace diff trc_01HZXQ... trc_01HZWP...
-
-# Re-score a stored trace with updated scorers
+leo trace diff   trc_01HZXQ... trc_01HZWP...
 leo trace rescore trc_01HZXQ... --scorers hallucination_rate,grounding_score
-
-# Export to OTLP
-leo trace export trc_01HZXQ... --format otlp --out ./traces/
+leo trace export  trc_01HZXQ... --format otlp --out ./traces/
 ```
 
 Replay is deterministic: LLM judges run at `temperature=0` with the trace ID seeded into the prompt, and tool results are mocked from the stored trace. Live API changes never affect replay scores. See [ADR-002](docs/architecture/ADR-002-scorer-determinism.md).
@@ -314,8 +337,6 @@ The scorer HPA scales on both CPU utilisation and `leo_orchestrator_worker_queue
 
 ## Observability
 
-Leo instruments itself with the same OpenTelemetry stack it uses to evaluate agents.
-
 | Signal | Backend | What it covers |
 |---|---|---|
 | Traces | Tempo | Eval run spans, scorer call latency, replay timing |
@@ -330,7 +351,6 @@ Key metrics:
 | `leo_orchestrator_worker_queue_depth` | Backpressure — scale scorer replicas if this climbs |
 | `leo_orchestrator_gate_decisions_total` | Regression rate over time, labelled by state |
 | `leo_scorer_call_duration_seconds` | LLM judge latency by dimension |
-| `leo_orchestrator_eval_cases_total` | Scorer infrastructure health, labelled by outcome |
 
 ---
 
