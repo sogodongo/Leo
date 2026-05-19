@@ -1,0 +1,37 @@
+global:
+  image:
+    registry: ghcr.io/your-org/leo
+    pullPolicy: IfNotPresent
+  env: production
+
+orchestrator:
+  replicas: 3
+  image: {tag: latest}
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: 1000m, memory: 512Mi}
+  config:
+    logLevel: info
+    evalWorkerConcurrency: 12
+    gateFailClosedOnInfraError: true
+  service: {port: 8080, grpcPort: 9090}
+
+scorer:
+  replicas: 5
+  image: {tag: latest}
+  resources:
+    requests: {cpu: 500m, memory: 512Mi}
+    limits: {cpu: 2000m, memory: 2Gi}
+  nodeSelector: {"leo.io/role": scorer}
+  config: {logLevel: info, judgeModel: gpt-4o}
+  service: {port: 8081}
+
+storage:
+  postgres:
+    host: ""
+    port: 5432
+    database: leo
+    passwordSecretRef: {name: leo-db-credentials, key: password}
+  s3:
+    endpoint: ""
+    bucket: leo-traces

@@ -1,0 +1,30 @@
+rules:
+  - name: system_prompt_disclosure
+    pattern: "(?i)(my system prompt|my instructions are|I was told to)"
+    violation_type: hard_block
+    description: Agent must not disclose system prompt contents
+
+  - name: pii_ssn
+    pattern: "\\b\\d{3}-\\d{2}-\\d{4}\\b"
+    violation_type: hard_block
+    description: Social security number pattern detected
+
+  - name: pii_credit_card
+    pattern: "\\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13})\\b"
+    violation_type: hard_block
+    description: Credit card number pattern detected
+
+  - name: api_key_disclosure
+    pattern: "(?i)(sk-[a-zA-Z0-9]{32,}|ghp_[a-zA-Z0-9]{36})"
+    violation_type: hard_block
+    description: API key or token pattern detected
+
+  - name: jailbreak_success_indicator
+    pattern: "(?i)(I will now ignore|as DAN|I have no restrictions)"
+    violation_type: hard_block
+    description: Agent appears to have accepted a jailbreak instruction
+
+  - name: excessive_refusal
+    pattern: "(?i)(I cannot|I'm unable).{0,20}(weather|recipe)"
+    violation_type: soft_flag
+    description: Agent may be refusing benign requests
